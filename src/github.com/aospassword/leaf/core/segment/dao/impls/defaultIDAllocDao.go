@@ -5,6 +5,8 @@ import (
 	"github.com/aospassword/leaf/core/segment/model"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/sirupsen/logrus"
+
+	_ "github.com/aospassword/leaf/core/segment/dao"
 )
 
 type DefaultIDAllocDao struct {
@@ -13,14 +15,19 @@ type DefaultIDAllocDao struct {
 
 var base = "root:asdasd123123@tcp(127.0.0.1:3306)/leaf?charset=utf8mb4"
 var updateMaxIDStmt = "UPDATE leaf_alloc SET max_id = max_id + step WHERE biz_tag = ?"
-var getLeafAllocStmt = "SELECT biz_tag, max_id, step, update_time FROM leaf_alloc WHERE biz_tag = ?"
+var getLeafAllocStmtWithTimestamp = "SELECT biz_tag, max_id, step, update_time FROM leaf_alloc WHERE biz_tag = ?"
+var getLeafAllocStmt = "SELECT biz_tag, max_id, step FROM leaf_alloc WHERE biz_tag = ?"
 var updateMaxIdByCustomStepStmt = "UPDATE leaf_alloc SET max_id = max_id + ? WHERE biz_tag = ?"
 var getAllTagsStmt = "SELECT biz_tag FROM leaf_alloc"
 var getAllLeafAllocsStmt = "SELECT biz_tag, max_id, step, update_time FROM leaf_alloc"
-var DefaultIDAllocDaoBean DefaultIDAllocDao = DefaultIDAllocDao{}
+var DefaultIDAllocDaoBean *DefaultIDAllocDao = &DefaultIDAllocDao{}
 
 func init()  {
-	open(&DefaultIDAllocDaoBean)
+	open(DefaultIDAllocDaoBean)
+}
+
+func Get() *DefaultIDAllocDao {
+	return DefaultIDAllocDaoBean
 }
 
 func open(dao *DefaultIDAllocDao)  {
@@ -32,60 +39,63 @@ func open(dao *DefaultIDAllocDao)  {
 	}
 }
 
+
 // 获取所有的 Leaf 表中的 Alloc
 func (dao *DefaultIDAllocDao)GetAllLeafAllocs() ([]model.LeafAlloc,error) {
 	return getAllLeafAllocs(dao.bd)
 }
 
 // 按照数据库中的 step 更新 Leaf 对应 tag 最大的段号，并且获取新的 LeafAlloc
-func (dao *DefaultIDAllocDao)UpdateMaxIdAndGetLeafAlloc(tag string) (alloc *model.LeafAlloc,err error) {
+func (dao *DefaultIDAllocDao)UpdateMaxIdAndGetLeafAlloc(tag string) (*model.LeafAlloc,error){
 	tx,err := dao.bd.Begin()
 	defer clearTransaction(tx)
 
 	if	err != nil {
 		logrus.Errorf("UpdateMaxIdAndGetLeafAlloc(tag string) \t" + tag + "\tdb.Begin()\t")
-		return
+		return nil,err
 	}
 
 	err = updateMaxID(tx,tag)
 
 	if err != nil  {
 		logrus.Errorf("UpdateMaxIdAndGetLeafAlloc(tag string) \t" + tag + "\ttx.Exec(updateMaxID,tag)\t")
-		return
+		return nil,err
 	}
 
-	alloc,err = getLeafAlloc(tx,tag)
+	alloc,err := getLeafAlloc(tx,tag)
 	if err != nil {
-		return
+		logrus.Errorf("UpdateMaxIdAndGetLeafAlloc(tag string) \t" + tag + "\tgetLeafAlloc(tx,tag)\t")
+
+		return nil,err
 	}
 	err = tx.Commit()
-	return
+	return alloc,nil
 }
 // 按照 Custom step 更新 maxID 并且获取最新的 LeafAlloc
-func (dao *DefaultIDAllocDao)UpdateMaxIdByCustomStepAndGetLeafAlloc(alloc *model.LeafAlloc) (result *model.LeafAlloc,err error) {
+func (dao *DefaultIDAllocDao)UpdateMaxIdByCustomStepAndGetLeafAlloc(alloc *model.LeafAlloc) (*model.LeafAlloc,error){
 	tx,err := dao.bd.Begin()
 	defer clearTransaction(tx)
 
 	if	err != nil {
 		logrus.Errorf("UpdateMaxIdByCustomStepAndGetLeafAlloc(alloc model.LeafAlloc) \t " + alloc.String() + "\tdb.Begin()\t")
-		return
+		return nil,err
 	}
 
 	err = updateMaxIdByCustomStep(tx,alloc)
 	if err != nil {
-		return
+		return nil,err
 	}
 
-	result,err = getLeafAlloc(tx,alloc.Key)
+	result,err := getLeafAlloc(tx,alloc.Key)
 	if err != nil {
-		return
+		return nil,err
 	}
 
 	err = tx.Commit()
-	return
+	return result,nil
 }
 
-func (dao *DefaultIDAllocDao)GetAllTags() (tags []string,err error) {
+func (dao *DefaultIDAllocDao)GetAllTags() ([]string, error){
 	return getAllTags(dao.bd)
 }
 
@@ -135,7 +145,7 @@ func handlerLeafAllocsWithTimestamp(rows *sql.Rows) []model.LeafAlloc {
 			alloc := model.LeafAlloc{}
 			err := rows.Scan(&alloc.Key, &alloc.MaxID, &alloc.Step, &alloc.UpdateTime)
 			if err != nil{
-				logrus.Error("handlerLeafAllocs(rows *sql.Rows) rows.Scan"+err.Error())
+				logrus.Error("handlerLeafAllocsWithTimestamp(rows *sql.Rows) rows.Scan"+err.Error())
 			}
 			result = append(result,alloc)
 

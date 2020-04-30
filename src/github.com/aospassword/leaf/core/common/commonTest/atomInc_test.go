@@ -95,8 +95,14 @@ import (
 // 很明显满足 5w QPS 的目标
 // PASS
 
-var autoInc = common.NewStableAtomInc(0,1,40)
-
+var autoInc = common.NewStableAtomInc(0,1,40,40,40)
+// +get(),-race
+//goos: windows
+//goarch: amd64
+//pkg: github.com/aospassword/leaf/core/common/commonTest
+//BenchmarkStableAutoInc
+//BenchmarkStableAutoInc-8           60606             17878 ns/op
+//PASS
 func BenchmarkStableAutoInc(b *testing.B) {
 
 	value, ok := autoInc.Inc(1)
@@ -107,6 +113,9 @@ func BenchmarkStableAutoInc(b *testing.B) {
 		}
 		for !ok {
 			value, ok = autoInc.Inc(1)
+			if	value != autoInc.Get(){
+				b.Errorf("error")
+			}
 		}
 		ok = false
 	}
@@ -156,7 +165,7 @@ func BenchmarkStableAutoInc(b *testing.B) {
 //--- PASS: TestParallelCustomerAutoInc (2.65s)
 //PASS
 func TestParallelStableAtomInc(t *testing.T) {
-	atomInc := common.NewStableAtomInc(0,1,50)
+	atomInc := common.NewStableAtomInc(0,1,50,50,50)
 	defer atomInc.Close()
 
 	result := make(chan int64)

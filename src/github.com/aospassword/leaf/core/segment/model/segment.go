@@ -16,7 +16,7 @@ type Segment struct {
 
 func NewSegment(buffer *SegmentBuffer) *Segment {
 	return &Segment{
-		common.NewStableAtomInc(0,1,40),
+		common.NewStableAtomInc(0,1,40,40,40),
 		0,
 		0,
 		buffer,
@@ -30,13 +30,17 @@ func (s *Segment)GetBuffer() *SegmentBuffer {
 }
 
 func (s *Segment)GetIdle() int64 {
-	return s.Max - s.IncAndGet(0)
+	return s.Max - s.Get()
 }
 
 
 func (s *Segment)String() string  {
 	str := "Segment{" + "value:" + s.AutoInc.String() + "}"
 	return str
+}
+
+func (s *Segment)Get() int64 {
+	return s.AutoInc.Get()
 }
 
 func (s *Segment)IncAndGet(step int64) int64 {

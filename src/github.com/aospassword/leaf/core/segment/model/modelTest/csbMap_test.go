@@ -40,7 +40,10 @@ func BenchmarkCSBMap(b *testing.B) {
 		key := strconv.Itoa(i)
 		_,ok = csbMap.Put(key)
 		if	ok {
-			csbMap.Get(key)
+			sb,ok := csbMap.Get(key)
+			if	ok{
+				sb.Current.IncAndGet(1)
+			}
 		}
 	}
 	fmt.Println(runtime.NumGoroutine())

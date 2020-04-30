@@ -3,10 +3,10 @@ package segment
 import (
 	"errors"
 	"github.com/aospassword/leaf/core/common"
-	"github.com/aospassword/leaf/core/segment/dao"
 	"github.com/aospassword/leaf/core/segment/dao/impls"
 	"github.com/aospassword/leaf/core/segment/model"
 	"github.com/sirupsen/logrus"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -24,9 +24,21 @@ const (
 type SegmentIDGenImpl struct {
 	initOK 	bool
 	cache	sync.Map
-	dao		dao.IDAllocDao
-	close   chan bool
+	dao		*impls.DefaultIDAllocDao
 	rwMutex sync.RWMutex
+}
+
+func NewSegmentIdGenImpl() (*SegmentIDGenImpl,error) {
+	idGen := &SegmentIDGenImpl{
+		initOK: false,
+		cache: sync.Map{},
+		dao: impls.DefaultIDAllocDaoBean,
+		rwMutex: sync.RWMutex{},
+	}
+	if err := idGen.Initialization();err != nil {
+		return nil, err
+	}
+	return idGen,nil
 }
 
 // 搜索数据库，对比数据库 alloc 的 all Tags，如果 cache 的 key 和 tags 不相等
@@ -36,15 +48,15 @@ func (idGen *SegmentIDGenImpl)Initialization() (err error) {
 	idGen.updateCacheFromDB()
 
 	idGen.rwMutex.Lock()
+	defer idGen.rwMutex.Unlock()
 	idGen.initOK = true
-	idGen.rwMutex.Unlock()
 
 	go idGen.updateCacheFromDbAtEveryMinute()
 	return
 }
 
 
-func (idGen *SegmentIDGenImpl)updateCacheFromDB() {
+func (idGen *SegmentIDGenImpl)updateCacheFromDB()  {
 	logrus.Info("update cache from db")
 	// 数据库中的所有 tags
 	tags,err := impls.DefaultIDAllocDaoBean.GetAllTags()
@@ -63,27 +75,26 @@ func (idGen *SegmentIDGenImpl)updateCacheFromDB() {
 	}
 
 
-	cache := idGen.cache
-
-
 	//将 cache 中已经存在的 tag 移出 insertTagsMap，为新建 Segment Buffer 做准备
-	for	_,k:= range cache {
-		_,ok := insertTagsMap[k]
-		if ok {
+	idGen.cache.Range(func(key, value interface{}) bool {
+		k := key.(string)
+		if	_,ok := insertTagsMap[k];ok {
 			delete(insertTagsMap,k)
 		}
 		removeTagsMap[k] = true
-	}
+		return true
+	})
 
 	// 向 cache 中填充 buffer
 	// buffer 于此处初始化
 	for k,_ := range insertTagsMap {
 
-		buffer,ok := idGen.cache.Put(k)
+		buffer,ok := idGen.cache.LoadOrStore(k,NewSegmentBuffer(k))
+		segmentBuffer :=  buffer.(*model.SegmentBuffer)
 		if	ok {
-			logrus.Info("add tag:" + k + "from db to IdCache,SegmentBuffer" + buffer.String())
+			logrus.Info("add tag:" + k + " from db to IdCache,SegmentBuffer" + segmentBuffer.String())
 		}else {
-			logrus.Warn("tag:" + k + "already was in IdCache,SegmentBuffer" + buffer.String())
+			logrus.Warn("tag:" + k + " already was in IdCache,SegmentBuffer" + segmentBuffer.String())
 		}
 
 	}
@@ -113,39 +124,55 @@ func (idGen *SegmentIDGenImpl)updateCacheFromDbAtEveryMinute()  {
 
 // 核心方法它lei了！
 func (idGen *SegmentIDGenImpl)Get(key string) *common.Result {
-	if	!idGen.getInitOK() {
+	logrus.Debug("start getting...")
+
+	if	!idGen.initOK {
 		return &common.Result {
 			Id : exceptionIDCacheInitFalse,
 			Status: common.Err,
 		}
 	}
-	buffer,ok := idGen.cache.Get(key)
+
+	value,ok := idGen.cache.Load(key)
+
 	if	ok {
 		// 一个经典的 初始化单例
+		buffer := value.(*model.SegmentBuffer)
 		buffer.RWMutex.RLock()
-		if !buffer.IsInitOk() {
-			value,ok := idGen.cache.Get(key)
-			if	ok {
-				return getIdFromSegmentBuffer(value)
-			}
+
+
+		logrus.Debug("Get Buffer Read Lock!")
+		// 判定其是否初始化完毕
+		if buffer.InitOK {
+			buffer.RWMutex.RUnlock()
+			logrus.Debug("Load "+ key + " SegmentBuffer!,RUnlock!")
+			return getIdFromSegmentBuffer(value.(*model.SegmentBuffer))
+
 		}
 		buffer.RWMutex.RUnlock()
 
 		buffer.RWMutex.Lock()
-		defer buffer.RWMutex.Unlock()
-		if	!buffer.IsInitOk() {
-			err := updateSegmentFromDb(key, buffer.GetCurrent())
-			logrus.Info("Init buffer. Update leafkey %s %s from db", key, buffer.GetCurrent())
-			buffer.SetInitOk(true)
+		// 二次判定
+		if	!buffer.InitOK {
+			logrus.Debug("buffer is not init ok!")
+			err := updateSegmentFromDb(key,buffer.Current)
+
+
+			logrus.Info("Init buffer. Update leafkey "+key+" from db")
+
+			buffer.InitOK = true
 
 			if	err!= nil {
-				logrus.Warnf("Init buffer %s exception : %s",buffer.GetCurrent(),err)
+				logrus.Warnf("Init buffer %s exception : %s",buffer.Current,err)
 			}
-			value,ok := idGen.cache.Get(key)
-			if	ok {
-				return getIdFromSegmentBuffer(value)
-			}
+
 		}
+		buffer.RWMutex.Unlock()
+		logrus.Debug(" init and load!")
+		if	ok {
+			return getIdFromSegmentBuffer(value.(*model.SegmentBuffer))
+		}
+
 	}
 	return &common.Result{
 		exceptionIDKeyNotExists,
@@ -153,28 +180,30 @@ func (idGen *SegmentIDGenImpl)Get(key string) *common.Result {
 	}
 }
 
-func (idGen *SegmentIDGenImpl)getInitOK() (bo bool) {
-	idGen.rwMutex.RLock()
-	bo = idGen.initOK
-	idGen.rwMutex.RUnlock()
-	return bo
-}
 
 // 更新 Segment 中的内容，其本身是 线程不安全 的。
 // 因为其在 buffer 的 RWMutex 的 Lock 中执行，所以不用担心并发
+// 致于nextBuffer，因为只有一个线程可以拿到 running 状态，所以也是单线程
 func updateSegmentFromDb(key string, segment *model.Segment) (err error) {
+	logrus.Debug("updateSegmentFromDb:key = "+key)
+
 	old := time.Now()
 	buffer := segment.GetBuffer()
 	var alloc *model.LeafAlloc
 
 	// buffer 未初始化，则联系 DB 初始化 buffer
-	if	!buffer.IsInitOk() {
+	if	!buffer.InitOK {
+
 		alloc,err = impls.DefaultIDAllocDaoBean.UpdateMaxIdAndGetLeafAlloc(key)
 		if	err != nil{
+			logrus.Errorf("impls.DefaultIDAllocDaoBean.UpdateMaxIdAndGetLeafAlloc(key):"+ key+"\terror")
 			return err
 		}
 		buffer.Step = alloc.Step
 		buffer.MinStep = alloc.Step
+
+		logrus.Debug("init buffer end!")
+
 
 		//如果 buffer 的updateTimestamp == 0，则说明其未被调用过，则连接 DB 获取段号
 	}else if buffer.UpdateTimestamp == 0 {
@@ -226,16 +255,18 @@ func updateSegmentFromDb(key string, segment *model.Segment) (err error) {
 		buffer.Step = nextStep
 		buffer.MinStep = alloc.Step //leafAlloc的step为DB中的step
 	}
-	value := alloc.MaxID - alloc.Step
+	logrus.Debug("setting segment...")
 
-	// 这里需要将 segment内含的计数器置为value，但是如果不用 unsafe 的话，很难同时保证 线程安全 和 高并发，所以我决定直接 new 一个新的 AtomInc
-	segment.AutoInc.Close()
-	segment.AutoInc = common.NewStableAtomInc(value,1,30)
+	value := alloc.MaxID - buffer.Step
+
+	segment.AutoInc.Set(value)
 	segment.Max = alloc.MaxID
 	segment.Step = buffer.Step
 
+	logrus.Debug("setting end!")
+
 	stopWatch := time.Since(old)
-	logrus.Info("updateSegmentFromDb running during %s",stopWatch)
+	logrus.Info("updateSegmentFromDb running during " + stopWatch.String())
 	return nil
 }
 
@@ -251,41 +282,116 @@ func getIdFromSegmentBuffer(buffer *model.SegmentBuffer) (result *common.Result)
 			return result
 		}
 		// 如果取不到结果，则让线程自旋，自旋等待时间过长则睡眠 10ms
-		waitAndSleep(buffer)
 
+		logrus.Debug("can't get ID ,so I Sleep!")
+		waitAndSleep(buffer)
+		// 加锁
+		logrus.Debug("try getting lock to switch!")
+
+		buffer.RWMutex.Lock()
+
+		logrus.Debug("try got Lock! and get atomInc value to compare with Max")
+
+		segment := buffer.Current
+		value := segment.Get()
+
+		logrus.Debug("get Lock,then got value: "+strconv.Itoa(int(value)))
+
+		if	value < segment.Max{
+			return &common.Result{
+				value,
+				common.Success,
+			}
+		}
+		logrus.Debug("atomInc value is too big,try to switch pointer")
+
+		if buffer.NextReady {
+			buffer.Switch()
+			buffer.NextReady = false
+		}else {
+			return &common.Result{
+				exceptionIDTwoSegmentsAreNull,
+				common.Err,
+			}
+		}
+
+		logrus.Debug("try switch func UnLocking...")
+		buffer.RWMutex.Unlock()
+		logrus.Debug("try switch func UnLock!")
 	}
 
 }
 
 
-func tryGetIdFromSegmentBuffer(buffer *model.SegmentBuffer) (result *common.Result,err error)  {
+func tryGetIdFromSegmentBuffer(buffer *model.SegmentBuffer) (*common.Result,error)  {
+	logrus.Debug("tryGetIdFromSegmentBuffer getting Lock!")
+
 	buffer.RWMutex.RLock()
 	defer buffer.RWMutex.RUnlock()
 
-	segment := buffer.GetCurrent()
-	border :=  float64(segment.Step) * 0.9
+	logrus.Debug("tryGetIdFromSegmentBuffer got Lock!")
+
+	segment := buffer.Current
+	border :=  segment.Step >> 3
+	hasUsed := segment.Step - segment.GetIdle()
 	// 当 buffer 的 NextSegment 没有初始化完成
 	// 且 正在使用的 segment 已经使用的段号小于 step 的 90%
 	// 且 buffer 负责准备下一个的 Segment 的线程未在工作
 	// 线程池更新 nextSegment
-	if	!buffer.IsNextReady() && (segment.GetIdle() < int64(border) && atomic.CompareAndSwapInt32(&buffer.Running,0,1)){
-		// 最大的问题来了，如何同时保证 buffer.Running 的 原子性 和 可见性
-		go func() {}()
+
+	if	!buffer.NextReady &&
+		hasUsed > border &&
+		atomic.CompareAndSwapInt32(&buffer.Running,0,1){
+		logrus.Infof("prepare Next Buffer,segment is : %d,hasUsed is %d,border is %d",segment.Get(),hasUsed,border)
+		// 只有 switch 可以将 nextReady 置为false
+		// 只有 updateOK 可将 &buffer.Running 置为 0
+
+		// 这里需要注意，因为对于 &buffer.Running 的读，发生在 waitAndSleep中的时候，是不需要读锁的，这使得我们必须保证 写过程 是 原子 的
+		// 但是因为 对于buffer.NextReady的读是包含在读锁中的，并不用考虑其数据竞争
+
+		go func() {
+			next := buffer.Next
+			updateOK := false
+
+			//
+			err := updateSegmentFromDb(buffer.Key,next)
+			updateOK = true
+
+			logrus.Info("update segment " + buffer.Key + " from db,max = "+strconv.Itoa(int(buffer.Next.Max)))
+
+			if err != nil {
+				return
+			}
+
+			defer func() {
+				if updateOK {
+					buffer.RWMutex.Lock()
+					buffer.NextReady = true
+					atomic.StoreInt32(&buffer.Running,0)
+					buffer.RWMutex.Unlock()
+				}else {
+					buffer.Running = 0
+				}
+			}()
+
+		}()
 	}
 	// 获得自增ID
 	value := segment.IncAndGet(1)
+	logrus.Debugf("value is %d,max is %d \n",value,segment.Max)
 	if	value < segment.Max {
 		return &common.Result{
-			value,
-			common.Success,
+			Id:value,
+			Status: common.Success,
 		},nil
 	}
-	return nil,errors.New("get Inc bigger with Segment.Max:"+ string(segment.IncAndGet(-1) ))
+	logrus.Infof("can't get the value,inc is too big")
+	return nil,errors.New("get Inc bigger with Segment.Max")
 }
 // 先让线程自旋，自旋等待时间过长则睡眠 10ms
 func waitAndSleep(buffer *model.SegmentBuffer) {
 	roll := 0
-	for atomic.CompareAndSwapInt32(&buffer.Running,1,1) {
+	for atomic.LoadInt32(&buffer.Running) == 1 {
 		roll++
 		if roll > 10000 {
 			time.Sleep(10 * time.Millisecond)
@@ -294,12 +400,13 @@ func waitAndSleep(buffer *model.SegmentBuffer) {
 	}
 }
 
-func PutSegmentBuffer() func(k string) *model.SegmentBuffer {
-	return NewSegmentBuffer
-}
-
+//func PutSegmentBuffer() func(k string) *model.SegmentBuffer {
+//	return NewSegmentBuffer
+//}
+//
 func NewSegmentBuffer(k string) *model.SegmentBuffer {
 	buffer := model.NewSegmentBuffer(k)
 
 	return buffer
 }
+

@@ -1,7 +1,7 @@
 package model
 
 import (
-	"github.com/aospassword/leaf/core/common"
+	"leaf/core/common"
 	"sync"
 	"time"
 )

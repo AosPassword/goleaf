@@ -2,18 +2,18 @@ package impls
 
 import (
 	"database/sql"
-	"github.com/aospassword/leaf/core/segment/model"
+	"leaf/core/segment/model"
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/sirupsen/logrus"
 
-	_ "github.com/aospassword/leaf/core/segment/dao"
+	//_ "leaf/core/segment/dao"
 )
 
 type DefaultIDAllocDao struct {
 	bd 	*sql.DB
 }
 
-var base = "root:asdasd123123@tcp(127.0.0.1:3306)/leaf?charset=utf8mb4"
+var base = "root:root@tcp(127.0.0.1:3306)/leaf?charset=utf8mb4"
 var updateMaxIDStmt = "UPDATE leaf_alloc SET max_id = max_id + step WHERE biz_tag = ?"
 var getLeafAllocStmtWithTimestamp = "SELECT biz_tag, max_id, step, update_time FROM leaf_alloc WHERE biz_tag = ?"
 var getLeafAllocStmt = "SELECT biz_tag, max_id, step FROM leaf_alloc WHERE biz_tag = ?"

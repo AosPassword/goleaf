@@ -1,6 +1,6 @@
 package dao
 
-import "github.com/aospassword/leaf/core/segment/model"
+import "leaf/core/segment/model"
 
 type IDAllocDao interface {
 	GetAllLeafAllocs() ([]model.LeafAlloc,error)

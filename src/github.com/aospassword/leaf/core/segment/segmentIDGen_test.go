@@ -2,9 +2,11 @@ package segment
 
 import (
 	"fmt"
-	"github.com/aospassword/leaf/core/common"
-	"github.com/sirupsen/logrus"
 	"testing"
+
+	"github.com/sirupsen/logrus"
+
+	"leaf/core/common"
 )
 // -race
 //--- PASS: TestSegmentIDGenImpl_Get (15.33s)

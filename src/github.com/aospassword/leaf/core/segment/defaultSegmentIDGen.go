@@ -2,14 +2,16 @@ package segment
 
 import (
 	"errors"
-	"github.com/aospassword/leaf/core/common"
-	"github.com/aospassword/leaf/core/segment/dao/impls"
-	"github.com/aospassword/leaf/core/segment/model"
-	"github.com/sirupsen/logrus"
 	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sirupsen/logrus"
+
+	"leaf/core/common"
+	"leaf/core/segment/dao/impls"
+	"leaf/core/segment/model"
 )
 
 const (
